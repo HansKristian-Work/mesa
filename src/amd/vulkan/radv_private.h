@@ -873,7 +873,10 @@ enum radv_dynamic_state_bits {
 	RADV_DYNAMIC_STENCIL_REFERENCE    = 1 << 8,
 	RADV_DYNAMIC_DISCARD_RECTANGLE    = 1 << 9,
 	RADV_DYNAMIC_SAMPLE_LOCATIONS     = 1 << 10,
-	RADV_DYNAMIC_ALL                  = (1 << 11) - 1,
+	RADV_DYNAMIC_PRIMITIVE_TOPOLOGY   = 1 << 11,
+	RADV_DYNAMIC_VIEWPORT_COUNT       = 1 << 12,
+	RADV_DYNAMIC_SCISSOR_COUNT        = 1 << 13,
+	RADV_DYNAMIC_ALL                  = (1 << 14) - 1,
 };
 
 enum radv_cmd_dirty_bits {
@@ -890,12 +893,14 @@ enum radv_cmd_dirty_bits {
 	RADV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE         = 1 << 8,
 	RADV_CMD_DIRTY_DYNAMIC_DISCARD_RECTANGLE         = 1 << 9,
 	RADV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS          = 1 << 10,
-	RADV_CMD_DIRTY_DYNAMIC_ALL                       = (1 << 11) - 1,
-	RADV_CMD_DIRTY_PIPELINE                          = 1 << 11,
-	RADV_CMD_DIRTY_INDEX_BUFFER                      = 1 << 12,
-	RADV_CMD_DIRTY_FRAMEBUFFER                       = 1 << 13,
-	RADV_CMD_DIRTY_VERTEX_BUFFER                     = 1 << 14,
-	RADV_CMD_DIRTY_STREAMOUT_BUFFER                  = 1 << 15,
+	RADV_CMD_DIRTY_PRIMITIVE_TOPOLOGY                = 1 << 11,
+	/* Dirty VIEWPORT/SCISSOR_COUNT state is baked into VIEWPORT/SCISSOR. */
+	RADV_CMD_DIRTY_DYNAMIC_ALL                       = (1 << 14) - 1,
+	RADV_CMD_DIRTY_PIPELINE                          = 1 << 14,
+	RADV_CMD_DIRTY_INDEX_BUFFER                      = 1 << 15,
+	RADV_CMD_DIRTY_FRAMEBUFFER                       = 1 << 16,
+	RADV_CMD_DIRTY_VERTEX_BUFFER                     = 1 << 17,
+	RADV_CMD_DIRTY_STREAMOUT_BUFFER                  = 1 << 18,
 };
 
 enum radv_cmd_flush_bits {
@@ -936,6 +941,7 @@ enum radv_cmd_flush_bits {
 struct radv_vertex_binding {
 	struct radv_buffer *                          buffer;
 	VkDeviceSize                                 offset;
+	uint32_t                                     stride;
 };
 
 struct radv_streamout_binding {
@@ -1027,6 +1033,8 @@ struct radv_dynamic_state {
 	struct radv_discard_rectangle_state               discard_rectangle;
 
 	struct radv_sample_locations_state                sample_location;
+
+	uint32_t                                       primitive_topology;
 };
 
 extern const struct radv_dynamic_state default_dynamic_state;
@@ -1119,6 +1127,11 @@ struct radv_subpass_sample_locs_state {
 	struct radv_sample_locations_state sample_location;
 };
 
+struct radv_prim_vertex_count {
+	uint8_t min;
+	uint8_t incr;
+};
+
 struct radv_cmd_state {
 	/* Vertex descriptors */
 	uint64_t                                      vb_va;
@@ -1151,6 +1164,8 @@ struct radv_cmd_state {
 	uint32_t                                     max_index_count;
 	uint64_t                                     index_va;
 	int32_t                                      last_index_type;
+
+	struct radv_prim_vertex_count                prim_vertex_count;
 
 	int32_t                                      last_primitive_reset_en;
 	uint32_t                                     last_primitive_reset_index;
@@ -1467,11 +1482,6 @@ struct radv_multisample_state {
 	unsigned num_samples;
 };
 
-struct radv_prim_vertex_count {
-	uint8_t min;
-	uint8_t incr;
-};
-
 struct radv_vertex_elements_info {
 	uint32_t format_size[MAX_VERTEX_ATTRIBS];
 };
@@ -1511,6 +1521,7 @@ struct radv_pipeline {
 
 	uint32_t                                     binding_stride[MAX_VBS];
 	uint8_t                                      num_vertex_bindings;
+	bool                                         dynamic_binding_stride;
 
 	uint32_t user_data_0[MESA_SHADER_STAGES];
 	union {

@@ -103,10 +103,27 @@ radv_bind_dynamic_state(struct radv_cmd_buffer *cmd_buffer,
 	uint32_t dest_mask = 0;
 
 	/* Make sure to copy the number of viewports/scissors because they can
-	 * only be specified at pipeline creation time.
+	 * only be specified at pipeline creation time unless DYNAMIC_VIEWPORT_COUNT_HACK/SCISSOR_COUNT_HACK are used.
+	 * Binding a pipeline invalidates dynamic state, so copying static state like this is correct.
 	 */
-	dest->viewport.count = src->viewport.count;
-	dest->scissor.count = src->scissor.count;
+	if (copy_mask & RADV_DYNAMIC_VIEWPORT_COUNT)
+	{
+		if (dest->viewport.count != src->viewport.count)
+		{
+			dest->viewport.count = src->viewport.count;
+			dest_mask |= RADV_DYNAMIC_VIEWPORT;
+		}
+	}
+
+	if (copy_mask & RADV_DYNAMIC_SCISSOR_COUNT)
+	{
+		if (dest->scissor.count != src->scissor.count)
+		{
+			dest->scissor.count = src->scissor.count;
+			dest_mask |= RADV_DYNAMIC_SCISSOR;
+		}
+	}
+
 	dest->discard_rectangle.count = src->discard_rectangle.count;
 	dest->sample_location.count = src->sample_location.count;
 
@@ -209,6 +226,15 @@ radv_bind_dynamic_state(struct radv_cmd_buffer *cmd_buffer,
 				     src->sample_location.locations,
 				     src->sample_location.count);
 			dest_mask |= RADV_DYNAMIC_SAMPLE_LOCATIONS;
+		}
+	}
+
+	if (copy_mask & RADV_DYNAMIC_PRIMITIVE_TOPOLOGY)
+	{
+		if (dest->primitive_topology != src->primitive_topology)
+		{
+			dest->primitive_topology = src->primitive_topology;
+			dest_mask |= RADV_DYNAMIC_PRIMITIVE_TOPOLOGY;
 		}
 	}
 
@@ -1183,6 +1209,17 @@ radv_emit_graphics_pipeline(struct radv_cmd_buffer *cmd_buffer)
 	cmd_buffer->state.dirty &= ~RADV_CMD_DIRTY_PIPELINE;
 }
 
+static void radv_emit_primitive_topology(struct radv_cmd_buffer *cmd_buffer)
+{
+	//fprintf(stderr, "EMITTING TOPOLOGY %u\n", cmd_buffer->state.dynamic.primitive_topology);
+	if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX7) {
+		radeon_set_uconfig_reg_idx(cmd_buffer->device->physical_device,
+				cmd_buffer->cs, R_030908_VGT_PRIMITIVE_TYPE, 1, cmd_buffer->state.dynamic.primitive_topology);
+	} else {
+		radeon_set_config_reg(cmd_buffer->cs, R_008958_VGT_PRIMITIVE_TYPE, cmd_buffer->state.dynamic.primitive_topology);
+	}
+}
+
 static void
 radv_emit_viewport(struct radv_cmd_buffer *cmd_buffer)
 {
@@ -2124,6 +2161,9 @@ radv_cmd_buffer_flush_dynamic_state(struct radv_cmd_buffer *cmd_buffer)
 {
 	uint32_t states = cmd_buffer->state.dirty & cmd_buffer->state.emitted_pipeline->graphics.needed_dynamic_state;
 
+	if (states & RADV_CMD_DIRTY_PRIMITIVE_TOPOLOGY)
+		radv_emit_primitive_topology(cmd_buffer);
+
 	if (states & (RADV_CMD_DIRTY_DYNAMIC_VIEWPORT))
 		radv_emit_viewport(cmd_buffer);
 
@@ -2387,10 +2427,13 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer,
 			uint32_t *desc = &((uint32_t *)vb_ptr)[i * 4];
 			uint32_t offset;
 			struct radv_buffer *buffer = cmd_buffer->vertex_bindings[i].buffer;
-			uint32_t stride = cmd_buffer->state.pipeline->binding_stride[i];
 
 			if (!buffer)
 				continue;
+
+			uint32_t stride = cmd_buffer->state.pipeline->dynamic_binding_stride ?
+				cmd_buffer->vertex_bindings[i].stride :
+				cmd_buffer->state.pipeline->binding_stride[i];
 
 			va = radv_buffer_get_va(buffer->bo);
 
@@ -3287,32 +3330,37 @@ VkResult radv_BeginCommandBuffer(
 	return result;
 }
 
-void radv_CmdBindVertexBuffers(
+void radv_CmdBindVertexBuffersWithStrideHACK(
 	VkCommandBuffer                             commandBuffer,
 	uint32_t                                    firstBinding,
 	uint32_t                                    bindingCount,
 	const VkBuffer*                             pBuffers,
-	const VkDeviceSize*                         pOffsets)
+	const VkDeviceSize*                         pOffsets,
+	const uint32_t*                             pStrides)
 {
 	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
 	struct radv_vertex_binding *vb = cmd_buffer->vertex_bindings;
 	bool changed = false;
 
 	/* We have to defer setting up vertex buffer since we need the buffer
-	 * stride from the pipeline. */
+	 * stride from the pipeline if static vertex stride is used. */
 
 	assert(firstBinding + bindingCount <= MAX_VBS);
 	for (uint32_t i = 0; i < bindingCount; i++) {
 		uint32_t idx = firstBinding + i;
 
+		uint32_t stride = pStrides ? pStrides[i] : 0;
+
 		if (!changed &&
 		    (vb[idx].buffer != radv_buffer_from_handle(pBuffers[i]) ||
-		     vb[idx].offset != pOffsets[i])) {
+		     vb[idx].offset != pOffsets[i] ||
+		     vb[idx].stride != stride)) {
 			changed = true;
 		}
 
 		vb[idx].buffer = radv_buffer_from_handle(pBuffers[i]);
 		vb[idx].offset = pOffsets[i];
+		vb[idx].stride = stride;
 
 		radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs,
 				   vb[idx].buffer->bo);
@@ -3324,6 +3372,16 @@ void radv_CmdBindVertexBuffers(
 	}
 
 	cmd_buffer->state.dirty |= RADV_CMD_DIRTY_VERTEX_BUFFER;
+}
+
+void radv_CmdBindVertexBuffers(
+	VkCommandBuffer                             commandBuffer,
+	uint32_t                                    firstBinding,
+	uint32_t                                    bindingCount,
+	const VkBuffer*                             pBuffers,
+	const VkDeviceSize*                         pOffsets)
+{
+	radv_CmdBindVertexBuffersWithStrideHACK(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, NULL);
 }
 
 static uint32_t
@@ -3731,6 +3789,12 @@ void radv_CmdBindPipeline(
 			cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_VGT_FLUSH;
 		}
 
+		if (pipeline->dynamic_state.mask & RADV_DYNAMIC_PRIMITIVE_TOPOLOGY)
+		{
+			/* Tess might get weird here with patch size. */
+			cmd_buffer->state.prim_vertex_count = pipeline->graphics.prim_vertex_count;
+		}
+
 		radv_bind_dynamic_state(cmd_buffer, &pipeline->dynamic_state);
 		radv_bind_streamout_state(cmd_buffer, pipeline);
 
@@ -3745,6 +3809,73 @@ void radv_CmdBindPipeline(
 	default:
 		assert(!"invalid bind point");
 		break;
+	}
+}
+
+/* FIXME: Duplicated. */
+static const struct radv_prim_vertex_count prim_size_table[] = {
+	[V_008958_DI_PT_NONE] = {0, 0},
+	[V_008958_DI_PT_POINTLIST] = {1, 1},
+	[V_008958_DI_PT_LINELIST] = {2, 2},
+	[V_008958_DI_PT_LINESTRIP] = {2, 1},
+	[V_008958_DI_PT_TRILIST] = {3, 3},
+	[V_008958_DI_PT_TRIFAN] = {3, 1},
+	[V_008958_DI_PT_TRISTRIP] = {3, 1},
+	[V_008958_DI_PT_LINELIST_ADJ] = {4, 4},
+	[V_008958_DI_PT_LINESTRIP_ADJ] = {4, 1},
+	[V_008958_DI_PT_TRILIST_ADJ] = {6, 6},
+	[V_008958_DI_PT_TRISTRIP_ADJ] = {6, 2},
+	[V_008958_DI_PT_RECTLIST] = {3, 3},
+	[V_008958_DI_PT_LINELOOP] = {2, 1},
+	[V_008958_DI_PT_POLYGON] = {3, 1},
+	[V_008958_DI_PT_2D_TRI_STRIP] = {0, 0},
+};
+
+
+void radv_CmdSetPrimitiveTopologyHACK(
+	VkCommandBuffer commandBuffer,
+	VkPrimitiveTopology topology)
+{
+	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+	struct radv_cmd_state *state = &cmd_buffer->state;
+	uint32_t primitive_topology = si_translate_prim(topology);
+
+	/* patchControlPoints is still static in the pipeline. */
+	if (topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST)
+	{
+		cmd_buffer->state.prim_vertex_count = prim_size_table[primitive_topology];
+		if (!cmd_buffer->state.prim_vertex_count.min)
+			cmd_buffer->state.prim_vertex_count.min = 1;
+		if (!cmd_buffer->state.prim_vertex_count.incr)
+			cmd_buffer->state.prim_vertex_count.incr = 1;
+	}
+
+	if (state->dynamic.primitive_topology != primitive_topology)
+	{
+		state->dynamic.primitive_topology = primitive_topology;
+		state->dirty |= RADV_CMD_DIRTY_PRIMITIVE_TOPOLOGY;
+	}
+}
+
+void radv_CmdSetViewportCountHACK(VkCommandBuffer commandBuffer, uint32_t viewportCount)
+{
+	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+	struct radv_cmd_state *state = &cmd_buffer->state;
+	if (state->dynamic.viewport.count != viewportCount)
+	{
+		state->dynamic.viewport.count = viewportCount;
+		state->dirty |= RADV_CMD_DIRTY_DYNAMIC_VIEWPORT;
+	}
+}
+
+void radv_CmdSetScissorCountHACK(VkCommandBuffer commandBuffer, uint32_t scissorCount)
+{
+	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+	struct radv_cmd_state *state = &cmd_buffer->state;
+	if (state->dynamic.scissor.count != scissorCount)
+	{
+		state->dynamic.scissor.count = scissorCount;
+		state->dirty |= RADV_CMD_DIRTY_DYNAMIC_SCISSOR;
 	}
 }
 

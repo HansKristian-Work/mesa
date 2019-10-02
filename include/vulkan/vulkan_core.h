@@ -530,6 +530,7 @@ typedef enum VkStructureType {
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT = 1000276000,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT = 1000281000,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_PROPERTIES_EXT = 1000281001,
+    VK_STRUCTURE_TYPE_PIPELINE_PRIMITIVE_TOPOLOGY_TYPE_CREATE_INFO_HACK = 2000100000,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES,
     VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
@@ -1211,6 +1212,10 @@ typedef enum VkDynamicState {
     VK_DYNAMIC_STATE_VIEWPORT_COARSE_SAMPLE_ORDER_NV = 1000164006,
     VK_DYNAMIC_STATE_EXCLUSIVE_SCISSOR_NV = 1000205001,
     VK_DYNAMIC_STATE_LINE_STIPPLE_EXT = 1000259000,
+    VK_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE_HACK = 2000000000,
+    VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_HACK = 2000100000,
+    VK_DYNAMIC_STATE_VIEWPORT_COUNT_HACK = 2000200000,
+    VK_DYNAMIC_STATE_SCISSOR_COUNT_HACK = 2000300000,
     VK_DYNAMIC_STATE_BEGIN_RANGE = VK_DYNAMIC_STATE_VIEWPORT,
     VK_DYNAMIC_STATE_END_RANGE = VK_DYNAMIC_STATE_STENCIL_REFERENCE,
     VK_DYNAMIC_STATE_RANGE_SIZE = (VK_DYNAMIC_STATE_STENCIL_REFERENCE - VK_DYNAMIC_STATE_VIEWPORT + 1),
@@ -3640,6 +3645,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetViewport(
     uint32_t                                    firstViewport,
     uint32_t                                    viewportCount,
     const VkViewport*                           pViewports);
+
 
 VKAPI_ATTR void VKAPI_CALL vkCmdSetScissor(
     VkCommandBuffer                             commandBuffer,
@@ -7669,8 +7675,6 @@ typedef struct VkPipelineRasterizationConservativeStateCreateInfoEXT {
     float                                                     extraPrimitiveOverestimationSize;
 } VkPipelineRasterizationConservativeStateCreateInfoEXT;
 
-
-
 #define VK_EXT_depth_clip_enable 1
 #define VK_EXT_DEPTH_CLIP_ENABLE_SPEC_VERSION 1
 #define VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME "VK_EXT_depth_clip_enable"
@@ -9876,6 +9880,51 @@ typedef struct VkPhysicalDeviceTexelBufferAlignmentPropertiesEXT {
 #define VK_GOOGLE_user_type 1
 #define VK_GOOGLE_USER_TYPE_SPEC_VERSION  1
 #define VK_GOOGLE_USER_TYPE_EXTENSION_NAME "VK_GOOGLE_user_type"
+
+#define VK_HACK_d3d12_dynamic_state 1
+#define VK_HACK_D3D12_DYNAMIC_STATE_SPEC_VERSION 1
+#define VK_HACK_D3D12_DYNAMIC_STATE_EXTENSION_NAME "VK_HACK_d3d12_dynamic_state"
+
+typedef enum VkPrimitiveTopologyTypeHACK
+{
+    VK_PRIMITIVE_TOPOLOGY_TYPE_POINT_HACK = 0,
+    VK_PRIMITIVE_TOPOLOGY_TYPE_LINE_HACK = 1,
+    VK_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_HACK = 2,
+    VK_PRIMITIVE_TOPOLOGY_TYPE_PATCH_HACK = 3
+} VkPrimitiveTopologyTypeHACK;
+
+typedef struct VkPipelinePrimitiveTopologyTypeCreateInfoHACK
+{
+    VkStructureType             sType;
+    const void*                 pNext;
+    VkPrimitiveTopologyTypeHACK topologyType;
+} VkPipelinePrimitiveTopologyTypeCreateInfoHACK;
+
+typedef void (VKAPI_PTR *PFN_vkCmdSetViewportCountHACK)(VkCommandBuffer commandBuffer, uint32_t viewportCount);
+typedef void (VKAPI_PTR *PFN_vkCmdSetScissorCountHACK)(VkCommandBuffer commandBuffer, uint32_t scissorCount);
+typedef void (VKAPI_PTR *PFN_vkCmdBindVertexBuffersWithStrideHACK)(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const uint32_t *pStrides);
+typedef void (VKAPI_PTR *PFN_vkCmdSetPrimitiveTopologyHACK)(VkCommandBuffer commandBuffer, VkPrimitiveTopology topology);
+
+#ifndef VK_NO_PROTOTYPES
+VKAPI_ATTR void VKAPI_CALL vkCmdSetPrimitiveTopologyHACK(
+    VkCommandBuffer commandBuffer,
+    VkPrimitiveTopology topology);
+
+VKAPI_ATTR void VKAPI_CALL vkCmdSetViewportCountHACK(
+    VkCommandBuffer commandBuffer,
+    uint32_t viewportCount);
+VKAPI_ATTR void VKAPI_CALL vkCmdSetScissorCountHACK(
+    VkCommandBuffer commandBuffer,
+    uint32_t scissorCount);
+
+VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffersWithStrideHACK(
+    VkCommandBuffer                             commandBuffer,
+    uint32_t                                    firstBinding,
+    uint32_t                                    bindingCount,
+    const VkBuffer*                             pBuffers,
+    const VkDeviceSize*                         pOffsets,
+    const uint32_t*                             pStrides);
+#endif
 
 #ifdef __cplusplus
 }

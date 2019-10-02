@@ -1201,35 +1201,18 @@ radv_prim_can_use_guardband(enum VkPrimitiveTopology topology)
 	}
 }
 
-static uint32_t
-si_translate_prim(enum VkPrimitiveTopology topology)
+static bool
+radv_prim_type_can_use_guardband(enum VkPrimitiveTopologyTypeHACK topologyType)
 {
-	switch (topology) {
-	case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
-		return V_008958_DI_PT_POINTLIST;
-	case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
-		return V_008958_DI_PT_LINELIST;
-	case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
-		return V_008958_DI_PT_LINESTRIP;
-	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
-		return V_008958_DI_PT_TRILIST;
-	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
-		return V_008958_DI_PT_TRISTRIP;
-	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
-		return V_008958_DI_PT_TRIFAN;
-	case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
-		return V_008958_DI_PT_LINELIST_ADJ;
-	case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
-		return V_008958_DI_PT_LINESTRIP_ADJ;
-	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
-		return V_008958_DI_PT_TRILIST_ADJ;
-	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
-		return V_008958_DI_PT_TRISTRIP_ADJ;
-	case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
-		return V_008958_DI_PT_PATCH;
+	switch (topologyType) {
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_POINT_HACK:
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_LINE_HACK:
+		return false;
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_HACK:
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_PATCH_HACK:
+		return true;
 	default:
-		assert(0);
-		return 0;
+		unreachable("unhandled primitive type");
 	}
 }
 
@@ -1280,6 +1263,23 @@ si_conv_prim_to_gs_out(enum VkPrimitiveTopology topology)
 	}
 }
 
+static uint32_t
+si_conv_prim_type_to_gs_out(enum VkPrimitiveTopologyTypeHACK topologyType)
+{
+	switch (topologyType) {
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_POINT_HACK:
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_PATCH_HACK:
+		return V_028A6C_OUTPRIM_TYPE_POINTLIST;
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_LINE_HACK:
+		return V_028A6C_OUTPRIM_TYPE_LINESTRIP;
+	case VK_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_HACK:
+		return V_028A6C_OUTPRIM_TYPE_TRISTRIP;
+	default:
+		assert(0);
+		return 0;
+	}
+}
+
 static unsigned radv_dynamic_state_mask(VkDynamicState state)
 {
 	switch(state) {
@@ -1287,6 +1287,10 @@ static unsigned radv_dynamic_state_mask(VkDynamicState state)
 		return RADV_DYNAMIC_VIEWPORT;
 	case VK_DYNAMIC_STATE_SCISSOR:
 		return RADV_DYNAMIC_SCISSOR;
+	case VK_DYNAMIC_STATE_VIEWPORT_COUNT_HACK:
+		return RADV_DYNAMIC_VIEWPORT_COUNT;
+	case VK_DYNAMIC_STATE_SCISSOR_COUNT_HACK:
+		return RADV_DYNAMIC_SCISSOR_COUNT;
 	case VK_DYNAMIC_STATE_LINE_WIDTH:
 		return RADV_DYNAMIC_LINE_WIDTH;
 	case VK_DYNAMIC_STATE_DEPTH_BIAS:
@@ -1305,6 +1309,12 @@ static unsigned radv_dynamic_state_mask(VkDynamicState state)
 		return RADV_DYNAMIC_DISCARD_RECTANGLE;
 	case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
 		return RADV_DYNAMIC_SAMPLE_LOCATIONS;
+	case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_HACK:
+		return RADV_DYNAMIC_PRIMITIVE_TOPOLOGY;
+	case VK_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE_HACK:
+		/* This is not really dynamic state for this implementation since vertex buffers
+		 * are emitted "dynamically" always. */
+		return 0;
 	default:
 		unreachable("Unhandled dynamic state");
 	}
@@ -1315,9 +1325,12 @@ static uint32_t radv_pipeline_needed_dynamic_state(const VkGraphicsPipelineCreat
 	uint32_t states = RADV_DYNAMIC_ALL;
 
 	/* If rasterization is disabled we do not care about any of the dynamic states,
-	 * since they are all rasterization related only. */
+	 * since they are all rasterization related only, except for topology type. */
 	if (pCreateInfo->pRasterizationState->rasterizerDiscardEnable)
-		return 0;
+	{
+		states &= RADV_DYNAMIC_PRIMITIVE_TOPOLOGY;
+		return states;
+	}
 
 	if (!pCreateInfo->pRasterizationState->depthBiasEnable)
 		states &= ~RADV_DYNAMIC_DEPTH_BIAS;
@@ -1357,28 +1370,45 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
 
 	pipeline->dynamic_state = default_dynamic_state;
 	pipeline->graphics.needed_dynamic_state = needed_states;
+	pipeline->dynamic_binding_stride = false;
 
 	if (pCreateInfo->pDynamicState) {
 		/* Remove all of the states that are marked as dynamic */
 		uint32_t count = pCreateInfo->pDynamicState->dynamicStateCount;
 		for (uint32_t s = 0; s < count; s++)
+		{
 			states &= ~radv_dynamic_state_mask(pCreateInfo->pDynamicState->pDynamicStates[s]);
+			switch (pCreateInfo->pDynamicState->pDynamicStates[s])
+			{
+			case VK_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE_HACK:
+				pipeline->dynamic_binding_stride = true;
+				break;
+
+			default:
+				break;
+			}
+		}
 	}
 
 	struct radv_dynamic_state *dynamic = &pipeline->dynamic_state;
 
-	if (needed_states & RADV_DYNAMIC_VIEWPORT) {
+	/* If we're using dynamic viewport or scissor counts, ignore viewport/scissor structs altogether. */
+	if ((states & RADV_DYNAMIC_VIEWPORT_COUNT) && (needed_states & RADV_DYNAMIC_VIEWPORT)) {
 		assert(pCreateInfo->pViewportState);
 
 		dynamic->viewport.count = pCreateInfo->pViewportState->viewportCount;
 		if (states & RADV_DYNAMIC_VIEWPORT) {
 			typed_memcpy(dynamic->viewport.viewports,
-			             pCreateInfo->pViewportState->pViewports,
-			             pCreateInfo->pViewportState->viewportCount);
+					pCreateInfo->pViewportState->pViewports,
+					pCreateInfo->pViewportState->viewportCount);
 		}
 	}
+	else
+		dynamic->viewport.count = 0;
 
-	if (needed_states & RADV_DYNAMIC_SCISSOR) {
+	if ((states & RADV_DYNAMIC_SCISSOR_COUNT) && (needed_states & RADV_DYNAMIC_SCISSOR)) {
+		assert(pCreateInfo->pViewportState);
+
 		dynamic->scissor.count = pCreateInfo->pViewportState->scissorCount;
 		if (states & RADV_DYNAMIC_SCISSOR) {
 			typed_memcpy(dynamic->scissor.scissors,
@@ -1386,6 +1416,8 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
 			             pCreateInfo->pViewportState->scissorCount);
 		}
 	}
+	else
+		dynamic->scissor.count = 0;
 
 	if (states & RADV_DYNAMIC_LINE_WIDTH) {
 		assert(pCreateInfo->pRasterizationState);
@@ -2129,17 +2161,17 @@ radv_link_shaders(struct radv_pipeline *pipeline, nir_shader **shaders)
 
 static uint32_t
 radv_get_attrib_stride(const VkPipelineVertexInputStateCreateInfo *input_state,
-		       uint32_t attrib_binding)
+                      uint32_t attrib_binding)
 {
-	for (uint32_t i = 0; i < input_state->vertexBindingDescriptionCount; i++) {
-		const VkVertexInputBindingDescription *input_binding =
-			&input_state->pVertexBindingDescriptions[i];
+       for (uint32_t i = 0; i < input_state->vertexBindingDescriptionCount; i++) {
+               const VkVertexInputBindingDescription *input_binding =
+                       &input_state->pVertexBindingDescriptions[i];
 
-		if (input_binding->binding == attrib_binding)
-			return input_binding->stride;
-	}
+               if (input_binding->binding == attrib_binding)
+                       return input_binding->stride;
+       }
 
-	return 0;
+       return 0;
 }
 
 static struct radv_pipeline_key
@@ -2200,7 +2232,11 @@ radv_generate_graphics_pipeline_key(struct radv_pipeline *pipeline,
 		key.vertex_attribute_formats[location] = data_format | (num_format << 4);
 		key.vertex_attribute_bindings[location] = desc->binding;
 		key.vertex_attribute_offsets[location] = desc->offset;
-		key.vertex_attribute_strides[location] = radv_get_attrib_stride(input_state, desc->binding);
+
+		if (pipeline->dynamic_binding_stride)
+			key.vertex_attribute_strides[location] = 0;
+		else
+			key.vertex_attribute_strides[location] = radv_get_attrib_stride(input_state, desc->binding);
 
 		if (pipeline->device->physical_device->rad_info.chip_class <= GFX8 &&
 		    pipeline->device->physical_device->rad_info.family != CHIP_STONEY) {
@@ -4444,12 +4480,16 @@ radv_pipeline_generate_pm4(struct radv_pipeline *pipeline,
 
 	radeon_set_context_reg(ctx_cs, R_028B54_VGT_SHADER_STAGES_EN, radv_compute_vgt_shader_stages_en(pipeline));
 
-	if (pipeline->device->physical_device->rad_info.chip_class >= GFX7) {
-		radeon_set_uconfig_reg_idx(pipeline->device->physical_device,
-					   cs, R_030908_VGT_PRIMITIVE_TYPE, 1, prim);
-	} else {
-		radeon_set_config_reg(cs, R_008958_VGT_PRIMITIVE_TYPE, prim);
+	if (prim && 0)
+	{
+		if (pipeline->device->physical_device->rad_info.chip_class >= GFX7) {
+			radeon_set_uconfig_reg_idx(pipeline->device->physical_device,
+					cs, R_030908_VGT_PRIMITIVE_TYPE, 1, prim);
+		} else {
+			radeon_set_config_reg(cs, R_008958_VGT_PRIMITIVE_TYPE, prim);
+		}
 	}
+
 	radeon_set_context_reg(ctx_cs, R_028A6C_VGT_GS_OUT_PRIM_TYPE, gs_out);
 
 	radeon_set_context_reg(ctx_cs, R_02820C_PA_SC_CLIPRECT_RULE, radv_compute_cliprect_rule(pCreateInfo));
@@ -4463,6 +4503,7 @@ radv_pipeline_generate_pm4(struct radv_pipeline *pipeline,
 static struct radv_ia_multi_vgt_param_helpers
 radv_compute_ia_multi_vgt_param_helpers(struct radv_pipeline *pipeline,
                                         const struct radv_tessellation_state *tess,
+                                        const VkPipelinePrimitiveTopologyTypeCreateInfoHACK *topology_type,
                                         uint32_t prim)
 {
 	struct radv_ia_multi_vgt_param_helpers ia_multi_vgt_param = {0};
@@ -4487,6 +4528,8 @@ radv_compute_ia_multi_vgt_param_helpers(struct radv_pipeline *pipeline,
 		 * 4 shader engines. Set 1 to pass the assertion below.
 		 * The other cases are hardware requirements. */
 		if (device->physical_device->rad_info.max_se < 4 ||
+		    (topology_type && topology_type->topologyType == VK_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_HACK) ||
+		    (topology_type && topology_type->topologyType == VK_PRIMITIVE_TOPOLOGY_TYPE_LINE_HACK) ||
 		    prim == V_008958_DI_PT_POLYGON ||
 		    prim == V_008958_DI_PT_LINELOOP ||
 		    prim == V_008958_DI_PT_TRIFAN ||
@@ -4536,6 +4579,8 @@ radv_compute_ia_multi_vgt_param_helpers(struct radv_pipeline *pipeline,
 	if (pipeline->graphics.prim_restart_enable &&
 	    (prim == V_008958_DI_PT_LINESTRIP ||
 	     prim == V_008958_DI_PT_TRISTRIP ||
+	     (topology_type && topology_type->topologyType == VK_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_HACK) ||
+	     (topology_type && topology_type->topologyType == VK_PRIMITIVE_TOPOLOGY_TYPE_LINE_HACK) ||
 	     prim == V_008958_DI_PT_LINESTRIP_ADJ ||
 	     prim == V_008958_DI_PT_TRISTRIP_ADJ)) {
 		ia_multi_vgt_param.partial_vs_wave = true;
@@ -4595,7 +4640,13 @@ radv_compute_vertex_input_state(struct radv_pipeline *pipeline,
 		const VkVertexInputBindingDescription *desc =
 			&vi_info->pVertexBindingDescriptions[i];
 
-		pipeline->binding_stride[desc->binding] = desc->stride;
+		if (!pipeline->dynamic_binding_stride)
+			pipeline->binding_stride[desc->binding] = desc->stride;
+		else {
+			/* Get it dynamically in command buffer instead. */
+			pipeline->binding_stride[desc->binding] = 0;
+		}
+
 		pipeline->num_vertex_bindings =
 			MAX2(pipeline->num_vertex_bindings, desc->binding + 1);
 	}
@@ -4644,6 +4695,9 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 
 	VkPipelineCreationFeedbackEXT *pipeline_feedback = creation_feedback ? creation_feedback->pPipelineCreationFeedback : NULL;
 
+	const VkPipelinePrimitiveTopologyTypeCreateInfoHACK *topology_type =
+		pCreateInfo->pInputAssemblyState ? vk_find_struct_const(pCreateInfo->pInputAssemblyState->pNext, PIPELINE_PRIMITIVE_TOPOLOGY_TYPE_CREATE_INFO_HACK) : NULL;
+
 	const VkPipelineShaderStageCreateInfo *pStages[MESA_SHADER_STAGES] = { 0, };
 	VkPipelineCreationFeedbackEXT *stage_feedbacks[MESA_SHADER_STAGES] = { 0 };
 	for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
@@ -4653,15 +4707,21 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 			stage_feedbacks[stage] = &creation_feedback->pPipelineStageCreationFeedbacks[i];
 	}
 
+	radv_pipeline_init_dynamic_state(pipeline, pCreateInfo);
+
 	struct radv_pipeline_key key = radv_generate_graphics_pipeline_key(pipeline, pCreateInfo, &blend, has_view_index);
 	radv_create_shaders(pipeline, device, cache, &key, pStages, pCreateInfo->flags, pCreateInfo, pipeline_feedback, stage_feedbacks);
 
 	pipeline->graphics.spi_baryc_cntl = S_0286E0_FRONT_FACE_ALL_BITS(1);
 	radv_pipeline_init_multisample_state(pipeline, &blend, pCreateInfo);
 	uint32_t gs_out;
-	uint32_t prim = si_translate_prim(pCreateInfo->pInputAssemblyState->topology);
+	uint32_t static_prim = topology_type ? 0 : si_translate_prim(pCreateInfo->pInputAssemblyState->topology);
+	pipeline->dynamic_state.primitive_topology = static_prim;
 
-	pipeline->graphics.can_use_guardband = radv_prim_can_use_guardband(pCreateInfo->pInputAssemblyState->topology);
+	if (topology_type)
+		pipeline->graphics.can_use_guardband = radv_prim_type_can_use_guardband(topology_type->topologyType);
+	else
+		pipeline->graphics.can_use_guardband = radv_prim_can_use_guardband(pCreateInfo->pInputAssemblyState->topology);
 
 	if (radv_pipeline_has_gs(pipeline)) {
 		gs_out = si_conv_gl_prim_to_gs_out(pipeline->shaders[MESA_SHADER_GEOMETRY]->info.gs.output_prim);
@@ -4673,20 +4733,28 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 			gs_out = si_conv_gl_prim_to_gs_out(pipeline->shaders[MESA_SHADER_TESS_EVAL]->info.tes.primitive_mode);
 		pipeline->graphics.can_use_guardband = gs_out == V_028A6C_OUTPRIM_TYPE_TRISTRIP;
 	} else {
-		gs_out = si_conv_prim_to_gs_out(pCreateInfo->pInputAssemblyState->topology);
+		if (topology_type)
+			gs_out = si_conv_prim_type_to_gs_out(topology_type->topologyType);
+		else
+			gs_out = si_conv_prim_to_gs_out(pCreateInfo->pInputAssemblyState->topology);
 	}
 	if (extra && extra->use_rectlist) {
-		prim = V_008958_DI_PT_RECTLIST;
+		static_prim = V_008958_DI_PT_RECTLIST;
 		gs_out = V_028A6C_OUTPRIM_TYPE_TRISTRIP;
 		pipeline->graphics.can_use_guardband = true;
 		if (radv_pipeline_has_ngg(pipeline))
 			gs_out = V_028A6C_VGT_OUT_RECT_V0;
 	}
 	pipeline->graphics.prim_restart_enable = !!pCreateInfo->pInputAssemblyState->primitiveRestartEnable;
-	/* prim vertex count will need TESS changes */
-	pipeline->graphics.prim_vertex_count = prim_size_table[prim];
 
-	radv_pipeline_init_dynamic_state(pipeline, pCreateInfo);
+	/* prim vertex count will need TESS changes */
+	if (topology_type) {
+		/* This will be updated in CmdSetPrimitiveTopologyHACK. */
+		pipeline->graphics.prim_vertex_count.min = 1;
+		pipeline->graphics.prim_vertex_count.incr = 1;
+	}
+	else
+		pipeline->graphics.prim_vertex_count = prim_size_table[static_prim];
 
 	/* Ensure that some export memory is always allocated, for two reasons:
 	 *
@@ -4728,14 +4796,14 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 
 	struct radv_tessellation_state tess = {0};
 	if (radv_pipeline_has_tess(pipeline)) {
-		if (prim == V_008958_DI_PT_PATCH) {
+		if ((topology_type && topology_type->topologyType == VK_PRIMITIVE_TOPOLOGY_TYPE_PATCH_HACK) || static_prim == V_008958_DI_PT_PATCH) {
 			pipeline->graphics.prim_vertex_count.min = pCreateInfo->pTessellationState->patchControlPoints;
 			pipeline->graphics.prim_vertex_count.incr = 1;
 		}
 		tess = calculate_tess_state(pipeline, pCreateInfo);
 	}
 
-	pipeline->graphics.ia_multi_vgt_param = radv_compute_ia_multi_vgt_param_helpers(pipeline, &tess, prim);
+	pipeline->graphics.ia_multi_vgt_param = radv_compute_ia_multi_vgt_param_helpers(pipeline, &tess, topology_type, static_prim);
 
 	radv_compute_vertex_input_state(pipeline, pCreateInfo);
 
@@ -4757,7 +4825,7 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 	pipeline->streamout_shader = radv_pipeline_get_streamout_shader(pipeline);
 
 	result = radv_pipeline_scratch_init(device, pipeline);
-	radv_pipeline_generate_pm4(pipeline, pCreateInfo, extra, &blend, &tess, prim, gs_out);
+	radv_pipeline_generate_pm4(pipeline, pCreateInfo, extra, &blend, &tess, static_prim, gs_out);
 
 	return result;
 }

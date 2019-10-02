@@ -149,4 +149,36 @@ static inline void radeon_set_uconfig_reg_idx(const struct radv_physical_device 
 	radeon_emit(cs, value);
 }
 
+static inline uint32_t
+si_translate_prim(enum VkPrimitiveTopology topology)
+{
+	switch (topology) {
+	case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
+		return V_008958_DI_PT_POINTLIST;
+	case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
+		return V_008958_DI_PT_LINELIST;
+	case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
+		return V_008958_DI_PT_LINESTRIP;
+	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
+		return V_008958_DI_PT_TRILIST;
+	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
+		return V_008958_DI_PT_TRISTRIP;
+	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
+		return V_008958_DI_PT_TRIFAN;
+	case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
+		return V_008958_DI_PT_LINELIST_ADJ;
+	case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
+		return V_008958_DI_PT_LINESTRIP_ADJ;
+	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
+		return V_008958_DI_PT_TRILIST_ADJ;
+	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
+		return V_008958_DI_PT_TRISTRIP_ADJ;
+	case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
+		return V_008958_DI_PT_PATCH;
+	default:
+		assert(0);
+		return 0;
+	}
+}
+
 #endif /* RADV_CS_H */

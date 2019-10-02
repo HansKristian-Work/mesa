@@ -6081,11 +6081,26 @@ typedef void <name>CAMetalLayer</name>;
             <param len="viewportCount">const <type>VkViewport</type>* <name>pViewports</name></param>
         </command>
         <command queues="graphics" renderpass="both" cmdbufferlevel="primary,secondary">
+            <proto><type>void</type> <name>vkCmdSetPrimitiveTopologyHACK</name></proto>
+            <param externsync="true"><type>VkCommandBuffer</type> <name>commandBuffer</name></param>
+            <param><type>VkPrimitiveTopology</type> <name>topology</name></param>
+        </command>
+        <command queues="graphics" renderpass="both" cmdbufferlevel="primary,secondary">
             <proto><type>void</type> <name>vkCmdSetScissor</name></proto>
             <param externsync="true"><type>VkCommandBuffer</type> <name>commandBuffer</name></param>
             <param><type>uint32_t</type> <name>firstScissor</name></param>
             <param><type>uint32_t</type> <name>scissorCount</name></param>
             <param len="scissorCount">const <type>VkRect2D</type>* <name>pScissors</name></param>
+        </command>
+        <command queues="graphics" renderpass="both" cmdbufferlevel="primary,secondary">
+            <proto><type>void</type> <name>vkCmdSetViewportCountHACK</name></proto>
+            <param externsync="true"><type>VkCommandBuffer</type> <name>commandBuffer</name></param>
+            <param><type>uint32_t</type> <name>viewportCount</name></param>
+        </command>
+        <command queues="graphics" renderpass="both" cmdbufferlevel="primary,secondary">
+            <proto><type>void</type> <name>vkCmdSetScissorCountHACK</name></proto>
+            <param externsync="true"><type>VkCommandBuffer</type> <name>commandBuffer</name></param>
+            <param><type>uint32_t</type> <name>scissorCount</name></param>
         </command>
         <command queues="graphics" renderpass="both" cmdbufferlevel="primary,secondary">
             <proto><type>void</type> <name>vkCmdSetLineWidth</name></proto>
@@ -6153,6 +6168,15 @@ typedef void <name>CAMetalLayer</name>;
             <param><type>uint32_t</type> <name>bindingCount</name></param>
             <param len="bindingCount">const <type>VkBuffer</type>* <name>pBuffers</name></param>
             <param len="bindingCount">const <type>VkDeviceSize</type>* <name>pOffsets</name></param>
+        </command>
+        <command queues="graphics" renderpass="both" cmdbufferlevel="primary,secondary">
+            <proto><type>void</type> <name>vkCmdBindVertexBuffersWithStrideHACK</name></proto>
+            <param externsync="true"><type>VkCommandBuffer</type> <name>commandBuffer</name></param>
+            <param><type>uint32_t</type> <name>firstBinding</name></param>
+            <param><type>uint32_t</type> <name>bindingCount</name></param>
+            <param len="bindingCount">const <type>VkBuffer</type>* <name>pBuffers</name></param>
+            <param len="bindingCount">const <type>VkDeviceSize</type>* <name>pOffsets</name></param>
+            <param len="bindingCount">const <type>uint32_t</type>* <name>pStrides</name></param>
         </command>
         <command queues="graphics" renderpass="inside" cmdbufferlevel="primary,secondary" pipeline="graphics">
             <proto><type>void</type> <name>vkCmdDraw</name></proto>
@@ -7947,7 +7971,10 @@ typedef void <name>CAMetalLayer</name>;
         <require comment="Command buffer building commands">
             <command name="vkCmdBindPipeline"/>
             <command name="vkCmdSetViewport"/>
+            <command name="vkCmdSetPrimitiveTopologyHACK"/>
             <command name="vkCmdSetScissor"/>
+            <command name="vkCmdSetViewportCountHACK"/>
+            <command name="vkCmdSetScissorCountHACK"/>
             <command name="vkCmdSetLineWidth"/>
             <command name="vkCmdSetDepthBias"/>
             <command name="vkCmdSetBlendConstants"/>
@@ -7958,6 +7985,7 @@ typedef void <name>CAMetalLayer</name>;
             <command name="vkCmdBindDescriptorSets"/>
             <command name="vkCmdBindIndexBuffer"/>
             <command name="vkCmdBindVertexBuffers"/>
+            <command name="vkCmdBindVertexBuffersWithStrideHACK"/>
             <command name="vkCmdDraw"/>
             <command name="vkCmdDrawIndexed"/>
             <command name="vkCmdDrawIndirect"/>
@@ -11516,6 +11544,12 @@ typedef void <name>CAMetalLayer</name>;
             <require>
                 <enum value="1"                                             name="VK_GOOGLE_USER_TYPE_SPEC_VERSION"/>
                 <enum value="&quot;VK_GOOGLE_user_type&quot;"               name="VK_GOOGLE_USER_TYPE_EXTENSION_NAME"/>
+            </require>
+        </extension>
+        <extension name="VK_HACK_d3d12_dynamic_state" number="1000" type="device" author="HACK" contact="hack @hack" supported="vulkan">
+            <require>
+                <enum value="1"                                             name="VK_HACK_D3D12_DYNAMIC_STATE_SPEC_VERSION"/>
+                <enum value="&quot;VK_HACK_d3d12_dynamic_state&quot;"       name="VK_HACK_D3D12_DYNAMIC_STATE_EXTENSION_NAME"/>
             </require>
         </extension>
     </extensions>
