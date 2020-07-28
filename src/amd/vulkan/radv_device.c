@@ -1378,6 +1378,12 @@ void radv_GetPhysicalDeviceFeatures2(
 			features->sparseImageFloat32AtomicAdd = false;
 			break;
 		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GENERIC_DESCRIPTORS_FEATURES_VALVE: {
+			VkPhysicalDeviceGenericDescriptorsFeaturesVALVE *features =
+				(VkPhysicalDeviceGenericDescriptorsFeaturesVALVE *)ext;
+			features->genericDescriptors = true;
+			break;
+		};
 		default:
 			break;
 		}
@@ -2016,6 +2022,18 @@ void radv_GetPhysicalDeviceProperties2(
 			props->maxCustomBorderColorSamplers = RADV_BORDER_COLOR_COUNT;
 			break;
 		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GENERIC_DESCRIPTORS_PROPERTIES_VALVE: {
+			VkPhysicalDeviceGenericDescriptorsPropertiesVALVE *props =
+				(VkPhysicalDeviceGenericDescriptorsPropertiesVALVE *)ext;
+			props->supportedGenericBindingFlags =
+				VK_DESCRIPTOR_BINDING_GENERIC_SAMPLED_IMAGE_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_UNIFORM_TEXEL_BUFFER_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_UNIFORM_BUFFER_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_STORAGE_BUFFER_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_STORAGE_IMAGE_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_STORAGE_TEXEL_BUFFER_BIT_VALVE;
+			break;
+		};
 		default:
 			break;
 		}

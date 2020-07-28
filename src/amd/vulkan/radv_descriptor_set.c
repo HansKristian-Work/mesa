@@ -68,6 +68,37 @@ create_sorted_bindings(const VkDescriptorSetLayoutBinding *bindings, unsigned co
 	return sorted_bindings;
 }
 
+static void radv_generic_descriptor_to_size_alignment(VkDescriptorBindingFlagBits flags,
+	uint32_t *size, uint32_t *alignment)
+{
+	*size = 0;
+	*alignment = 0;
+
+	if (flags & (VK_DESCRIPTOR_BINDING_GENERIC_SAMPLED_IMAGE_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_STORAGE_IMAGE_BIT_VALVE))
+	{
+		if (*size < 64)
+			*size = 64;
+		if (*alignment < 32)
+			*alignment = 32;
+	}
+
+	if (flags & (VK_DESCRIPTOR_BINDING_GENERIC_UNIFORM_BUFFER_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_STORAGE_BUFFER_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_UNIFORM_TEXEL_BUFFER_BIT_VALVE |
+				VK_DESCRIPTOR_BINDING_GENERIC_STORAGE_TEXEL_BUFFER_BIT_VALVE))
+	{
+
+		if (*size < 16)
+			*size = 16;
+		if (*alignment < 16)
+			*alignment = 16;
+	}
+
+	assert(*size);
+	assert(*alignment);
+}
+
 VkResult radv_CreateDescriptorSetLayout(
 	VkDevice                                    _device,
 	const VkDescriptorSetLayoutCreateInfo*      pCreateInfo,
@@ -199,6 +230,13 @@ VkResult radv_CreateDescriptorSetLayout(
 			set_layout->binding[b].size = 64;
 			binding_buffer_count = 1;
 			alignment = 32;
+			break;
+		case VK_DESCRIPTOR_TYPE_GENERIC_VALVE:
+			assert(variable_flags);
+			binding_buffer_count = 1;
+			radv_generic_descriptor_to_size_alignment(
+					variable_flags->pBindingFlags[b],
+					&set_layout->binding[b].size, &alignment);
 			break;
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 			/* main descriptor + fmask descriptor + sampler */
@@ -547,7 +585,7 @@ radv_descriptor_set_create(struct radv_device *device,
 		if (pool->current_offset + layout_size <= pool->size) {
 			set->bo = pool->bo;
 			set->mapped_ptr = (uint32_t*)(pool->mapped_ptr + pool->current_offset);
-			set->va = radv_buffer_get_va(set->bo) + pool->current_offset;
+			set->va = set->bo ? (radv_buffer_get_va(set->bo) + pool->current_offset) : 0;
 			if (!pool->host_memory_base) {
 				pool->entries[pool->entry_count].offset = pool->current_offset;
 				pool->entries[pool->entry_count].size = layout_size;
@@ -571,7 +609,7 @@ radv_descriptor_set_create(struct radv_device *device,
 			}
 			set->bo = pool->bo;
 			set->mapped_ptr = (uint32_t*)(pool->mapped_ptr + offset);
-			set->va = radv_buffer_get_va(set->bo) + offset;
+			set->va = set->bo ? (radv_buffer_get_va(set->bo) + offset) : 0;
 			memmove(&pool->entries[index + 1], &pool->entries[index],
 				sizeof(pool->entries[0]) * (pool->entry_count - index));
 			pool->entries[index].offset = offset;
@@ -639,6 +677,8 @@ static void radv_destroy_descriptor_pool(struct radv_device *device,
 
 	if (pool->bo)
 		device->ws->buffer_destroy(pool->bo);
+	if (pool->host_bo)
+		vk_free2(&device->vk.alloc, pAllocator, pool->host_bo);
 
 	vk_object_base_finish(&pool->base);
 	vk_free2(&device->vk.alloc, pAllocator, pool);
@@ -696,6 +736,10 @@ VkResult radv_CreateDescriptorPool(
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 			bo_size += 96 * pCreateInfo->pPoolSizes[i].descriptorCount;
 			break;
+		case VK_DESCRIPTOR_TYPE_GENERIC_VALVE:
+			/* TODO: Should we pass down flags? */
+			bo_size += 64 * pCreateInfo->pPoolSizes[i].descriptorCount;
+			break;
 		case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
 			bo_size += pCreateInfo->pPoolSizes[i].descriptorCount;
 			break;
@@ -730,20 +774,31 @@ VkResult radv_CreateDescriptorPool(
 	}
 
 	if (bo_size) {
-		pool->bo = device->ws->buffer_create(device->ws, bo_size, 32,
-						     RADEON_DOMAIN_VRAM,
-						     RADEON_FLAG_NO_INTERPROCESS_SHARING |
-						     RADEON_FLAG_READ_ONLY |
-						     RADEON_FLAG_32BIT,
-						     RADV_BO_PRIORITY_DESCRIPTOR);
-		if (!pool->bo) {
-			radv_destroy_descriptor_pool(device, pAllocator, pool);
-			return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-		}
-		pool->mapped_ptr = (uint8_t*)device->ws->buffer_map(pool->bo);
-		if (!pool->mapped_ptr) {
-			radv_destroy_descriptor_pool(device, pAllocator, pool);
-			return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+		if (!(pCreateInfo->flags & VK_DESCRIPTOR_POOL_CREATE_HOST_ONLY_BIT_VALVE)) {
+			pool->bo = device->ws->buffer_create(device->ws, bo_size, 32,
+								 RADEON_DOMAIN_VRAM,
+								 RADEON_FLAG_NO_INTERPROCESS_SHARING |
+								 RADEON_FLAG_READ_ONLY |
+								 RADEON_FLAG_32BIT,
+								 RADV_BO_PRIORITY_DESCRIPTOR);
+			if (!pool->bo) {
+				radv_destroy_descriptor_pool(device, pAllocator, pool);
+				return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+			}
+			pool->mapped_ptr = (uint8_t*)device->ws->buffer_map(pool->bo);
+			if (!pool->mapped_ptr) {
+				radv_destroy_descriptor_pool(device, pAllocator, pool);
+				return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+			}
+		} else {
+			pool->bo = NULL;
+			pool->host_bo = vk_alloc2(&device->vk.alloc, pAllocator, bo_size, 8,
+			                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+			if (!pool->host_bo) {
+				radv_destroy_descriptor_pool(device, pAllocator, pool);
+				return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+			}
+			pool->mapped_ptr = pool->host_bo;
 		}
 	}
 	pool->size = bo_size;
@@ -1175,7 +1230,8 @@ void radv_update_descriptor_sets(
 				break;
 			}
 			default:
-				memcpy(dst_ptr, src_ptr, src_binding_layout->size);
+				/* In case of copies between GENERIC and non-GENERIC descriptors, copy the smallest size. */
+				memcpy(dst_ptr, src_ptr, src_binding_layout->size < dst_binding_layout->size ? src_binding_layout->size : dst_binding_layout->size);
 			}
 			src_ptr += src_binding_layout->size / 4;
 			dst_ptr += dst_binding_layout->size / 4;
